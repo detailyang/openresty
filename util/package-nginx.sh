@@ -1,7 +1,12 @@
 #!/bin/bash
 
-. ./util/ver
-ver=$main_ver
+#. ./util/ver
+ver=$1
+
+if [ -z "$ver" ]; then
+    echo "No version arg specified" > /dev/stderr
+    exit 1
+fi
 
 cd ..
 if [ ! -d nginx ]; then
@@ -14,6 +19,8 @@ if [ ! -d nginx/.git ]; then
 fi
 
 cd nginx || exit 1
+git reset --hard || exit 1
+git checkout master || exit 1
 git pull --force || exit 1
 cd .. || exit 1
 
@@ -23,8 +30,8 @@ git clone nginx nginx-$ver || exit 1
 cd nginx-$ver/ || exit 1
 git co release-$ver || exit 1
 rm -rf .git || exit 1
-rm .hgtags || exit 1
-mv docs/text/README ./ || exit 1
+rm -f .hgtags || exit 1
+#mv docs/text/README ./ || exit 1
 mv auto/configure ./ || exit 1
 rm -rf src/mysql || exit 1
 cd ..

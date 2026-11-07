@@ -1,10 +1,10 @@
-.PHONY: all test try-luajit try-lua
+.PHONY: all test try-luajit try-lua clean
 
 all:
 	./util/mirror-tarballs
 
 test:
-	prove -r t
+	prove -I../test-nginx/lib -r t
 
 try-luajit: all
 	cd openresty-`./util/ver` && ./configure --with-luajit
@@ -12,3 +12,5 @@ try-luajit: all
 try-lua: all
 	cd openresty-`./util/ver` && ./configure && $(MAKE)
 
+clean:
+	rm -rf openresty-*

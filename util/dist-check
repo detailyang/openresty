@@ -6,8 +6,13 @@ use warnings;
 use Getopt::Std qw(getopts);
 use Cwd qw/cwd/;
 
-sub sh ($);
+sub sh ($@);
+sub cleanup ();
 sub write_config_file ($);
+
+BEGIN {
+    $ENV{LC_ALL} = 'C';
+}
 
 my %opts;
 getopts("lf:", \%opts) or die "Usage: $0 [-f] [-l] <cores>\n";
@@ -32,14 +37,8 @@ if ($^O eq 'freebsd' || $^O eq 'solaris') {
 
 my $cfg_opts = "";
 
-if ($opts{l}) {
-    $lua = 'Lua';
-    $cfg_opts .= " --with-lua51";
-
-} else {
-    $lua = 'LuaJIT';
-    #$cfg_opts .= " --with-luajit";
-}
+$lua = 'LuaJIT';
+#$cfg_opts .= " --with-luajit";
 
 if ($^O eq 'solaris') {
     $cfg_opts .= " --with-cc=gcc";
@@ -50,11 +49,26 @@ if ($^O eq 'darwin') {
                . "-I/usr/local/opt/pcre/include/'"
                . " --with-ld-opt='-L/usr/local/opt/openssl/lib/ "
                . "-L/usr/local/opt/pcre/lib/'";
+
+} else {
+    my $ssl_prefix = $ENV{OPENSSL_PREFIX};
+    if (defined $ssl_prefix) {
+        $cfg_opts .= " --with-cc-opt='-I$ssl_prefix/include/' "
+                   . " --with-ld-opt='-L$ssl_prefix/lib/' ";
+    }
+}
+
+if ($^O eq 'freebsd') {
+    $cfg_opts .= " --with-luajit-xcflags='-fPIC'"
 }
 
 my $prefix;
+my $prefix_base = $ENV{DIST_CHECK_PREFIX} || "/usr/local/openresty";
+my $sudo = $ENV{DIST_CHECK_SUDO} // "sudo";
+my $port = $ENV{DIST_CHECK_PORT} || 8081;
 
 my $config = do { local $/; <DATA> };
+$config =~ s/(listen\s+\*:)80;/$1$port;/;
 
 sub write_config_file ($) {
     my $outfile = shift;
@@ -67,183 +81,222 @@ sub write_config_file ($) {
 
 write_config_file "/tmp/nginx.conf";
 
-warn "=== --with-stream ===\n";
-$prefix = "/usr/local/openresty-stream";
-sh "sudo rm -rf $prefix/lualib $prefix/luajit $prefix/bin $prefix/lua $prefix/nginx/sbin $prefix/nginx/html";
-unless ($opts{f}) {
-    sh "./configure $cfg_opts --with-stream --prefix=$prefix -j$jobs > /dev/null";
-}
-sh "$make -j$jobs > /dev/null";
-sh "sudo $make install > /dev/null";
-sh "sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
-sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep $ver";
-sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--with-stream'";
-system "sudo killall nginx > /dev/null 2>&1";
-sh "sudo $prefix/nginx/sbin/nginx";
-sh "curl -si localhost/lua|grep $lua";
-sh "curl -si localhost/lua|grep $ver";
-sh "curl -si localhost/cjson|grep 'json.safe: '";
-sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
-sh "sudo $prefix/nginx/sbin/nginx -sstop";
+if (1) {
 
-warn "=== --with-stream + dtrace static probes ===\n";
-$prefix = "/usr/local/openresty-stream-usdt";
-sh "sudo rm -rf $prefix/lualib $prefix/luajit $prefix/bin $prefix/lua $prefix/nginx/sbin $prefix/nginx/html";
+warn "\n=== --without-stream ===\n";
+$prefix = "$prefix_base-nostream";
+cleanup();
 unless ($opts{f}) {
-    sh "./configure $cfg_opts --with-dtrace-probes --with-stream --prefix=$prefix -j$jobs > /dev/null";
+    sh "./configure $cfg_opts --without-stream --prefix=$prefix -j$jobs";
 }
-sh "$make -j$jobs > /dev/null";
-sh "sudo $make install > /dev/null";
-sh "sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
+sh "$make -j$jobs";
+sh "$sudo $make install";
+sh "$sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep $ver";
-sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--with-stream'";
-sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--with-dtrace-probes'";
-system "sudo killall nginx > /dev/null 2>&1";
-sh "sudo $prefix/nginx/sbin/nginx";
-sh "curl -si localhost/lua|grep $lua";
-sh "curl -si localhost/lua|grep $ver";
-sh "curl -si localhost/cjson|grep 'json.safe: '";
-sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
-sh "sudo $prefix/nginx/sbin/nginx -sstop";
+sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep -v 'stream_proxy'";
+#system "[ -f '$prefix/nginx/logs/nginx.pid' ] && $sudo kill \$(cat '$prefix/nginx/logs/nginx.pid') > /dev/null 2>&1";
+sh "$sudo $prefix/nginx/sbin/nginx";
+sh "curl -si localhost:$port/lua|grep $lua";
+sh "curl -si localhost:$port/lua|grep $ver";
+sh "curl -si localhost:$port/cjson|grep 'json.safe: '";
+sh qq{$prefix/bin/resty --no-stream -e 'ngx.say("Hello World!")'|grep 'Hello World'};
+sh "$sudo $prefix/nginx/sbin/nginx -sstop";
 
-warn "=== Without Gzip/SSL/PCRE ===\n";
-$prefix = "/usr/local/openresty-nogzip";
-sh "sudo rm -rf $prefix/lualib $prefix/luajit $prefix/bin $prefix/lua $prefix/nginx/sbin $prefix/nginx/html";
-unless ($opts{f}) {
-    sh "./configure $cfg_opts --without-http_rewrite_module --without-http_ssl_module --without-pcre --without-http_gzip_module --prefix=$prefix -j$jobs > /dev/null";
 }
-sh "$make -j$jobs > /dev/null";
-sh "sudo $make install > /dev/null";
-sh "sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
+
+#warn "\n=== --without-stream + dtrace static probes ===\n";
+#$prefix = "/usr/local/openresty-nostream-usdt";
+#cleanup();
+#unless ($opts{f}) {
+#sh "./configure $cfg_opts --with-dtrace-probes --without-stream --prefix=$prefix -j$jobs";
+#}
+#sh "$make -j$jobs";
+#sh "$sudo $make install";
+#sh "$sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
+#sh "$prefix/nginx/sbin/nginx -V 2>\&1", $ver;
+#sh "$prefix/nginx/sbin/nginx -V 2>\&1", "--with-stream", 1;
+#sh "$prefix/nginx/sbin/nginx -V 2>\&1", "--with-dtrace-probes";
+#system "[ -f '$prefix/nginx/logs/nginx.pid' ] && $sudo kill \$(cat '$prefix/nginx/logs/nginx.pid') > /dev/null 2>&1";
+#sh "$sudo $prefix/nginx/sbin/nginx";
+#sh "curl -si localhost:$port/lua|grep $lua";
+#sh "curl -si localhost:$port/lua|grep $ver";
+#sh "curl -si localhost:$port/cjson|grep 'json.safe: '";
+#sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'}, 'Hello World';
+#sh "$sudo $prefix/nginx/sbin/nginx -sstop";
+
+warn "\n=== Without Gzip/SSL/PCRE ===\n";
+$prefix = "$prefix_base-nogzip";
+cleanup();
+unless ($opts{f}) {
+    sh "./configure $cfg_opts --without-http_rewrite_module --without-http_ssl_module --without-pcre --without-http_gzip_module --prefix=$prefix -j$jobs";
+}
+sh "$make -j$jobs";
+sh "$sudo $make install";
+sh "$sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep $ver";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--without-http_gzip_module'";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep -v -q '\\--with-http_ssl_module'";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--without-pcre'";
-system "sudo killall nginx > /dev/null 2>&1";
-sh "sudo $prefix/nginx/sbin/nginx";
-sh "curl -si localhost/lua|grep $lua";
-sh "curl -si localhost/lua|grep $ver";
-sh "curl -si localhost/cjson|grep 'json.safe: '";
-sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
-sh "sudo $prefix/nginx/sbin/nginx -sstop";
+system "[ -f '$prefix/nginx/logs/nginx.pid' ] && $sudo kill \$(cat '$prefix/nginx/logs/nginx.pid') > /dev/null 2>&1";
+if (0) {
+sh "$sudo $prefix/nginx/sbin/nginx";
+sh "curl -si localhost:$port/lua|grep $lua";
+sh "curl -si localhost:$port/lua|grep $ver";
+sh "curl -si localhost:$port/cjson|grep 'json.safe: '";
+#sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
+sh "$sudo $prefix/nginx/sbin/nginx -sstop";
+}
 
 $cfg_opts .= " --with-http_iconv_module";
 
 warn "\n=== --with-threads ===\n";
-$prefix = "/usr/local/openresty-threads";
-sh "sudo rm -rf $prefix/lualib $prefix/luajit $prefix/bin $prefix/lua $prefix/nginx/sbin $prefix/nginx/html";
+$prefix = "$prefix_base-threads";
+cleanup();
 unless ($opts{f}) {
-    sh "./configure $cfg_opts --with-threads --prefix=$prefix -j$jobs > /dev/null";
+    sh "./configure $cfg_opts --with-threads --prefix=$prefix -j$jobs";
 }
-sh "$make -j$jobs > /dev/null";
-sh "sudo $make install > /dev/null";
-sh "sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
+sh "$make -j$jobs";
+sh "$sudo $make install";
+sh "$sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep $ver";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--with-threads'";
-system "sudo killall nginx > /dev/null 2>&1";
-sh "sudo $prefix/nginx/sbin/nginx";
-sh "curl -si localhost/lua|grep $lua";
-sh "curl -si localhost/lua|grep $ver";
-sh "curl -si localhost/cjson|grep 'json.safe: '";
+system "[ -f '$prefix/nginx/logs/nginx.pid' ] && $sudo kill \$(cat '$prefix/nginx/logs/nginx.pid') > /dev/null 2>&1";
+sh "$sudo $prefix/nginx/sbin/nginx";
+sh "curl -si localhost:$port/lua|grep $lua";
+sh "curl -si localhost:$port/lua|grep $ver";
+sh "curl -si localhost:$port/cjson|grep 'json.safe: '";
 sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
-sh "sudo $prefix/nginx/sbin/nginx -sstop";
+sh "$sudo $prefix/nginx/sbin/nginx -sstop";
 
 warn "\n=== No Pool Build ===\n";
-$prefix = "/usr/local/openresty-nopool";
-sh "sudo rm -rf $prefix/lualib $prefix/luajit $prefix/bin $prefix/lua $prefix/nginx/sbin $prefix/nginx/html";
+$prefix = "$prefix_base-nopool";
+cleanup();
 unless ($opts{f}) {
     sh "./configure --with-no-pool-patch $cfg_opts --prefix=$prefix -j$jobs > /dev/null";
 }
 sh "$make -j$jobs > /dev/null";
-sh "sudo $make install > /dev/null";
-sh "sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
+sh "$sudo $make install > /dev/null";
+sh "$sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep $ver";
 #sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--with-no-pool-patch'";
-system "sudo killall nginx > /dev/null 2>&1";
-sh "sudo $prefix/nginx/sbin/nginx";
-sh "curl -si localhost/lua|grep $lua";
-sh "curl -si localhost/lua|grep $ver";
-sh "curl -si localhost/lua|grep 'no pool'";
-sh "curl -si localhost/cjson|grep 'json.safe: '";
+system "[ -f '$prefix/nginx/logs/nginx.pid' ] && $sudo kill \$(cat '$prefix/nginx/logs/nginx.pid') > /dev/null 2>&1";
+sh "$sudo $prefix/nginx/sbin/nginx";
+sh "curl -si localhost:$port/lua|grep $lua";
+sh "curl -si localhost:$port/lua|grep $ver";
+sh "curl -si localhost:$port/lua|grep 'no pool'";
+sh "curl -si localhost:$port/cjson|grep 'json.safe: '";
 sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
-sh "sudo $prefix/nginx/sbin/nginx -sstop";
+sh "$sudo $prefix/nginx/sbin/nginx -sstop";
 
 warn "\n=== Normal Build ===\n";
-$prefix = "/usr/local/openresty";
-sh "sudo rm -rf $prefix/lualib $prefix/luajit $prefix/bin $prefix/lua $prefix/nginx/sbin $prefix/nginx/html";
+$prefix = "$prefix_base-norm";
+cleanup();
 unless ($opts{f}) {
-    sh "./configure $cfg_opts -j$jobs > /dev/null";
+    sh "./configure $cfg_opts --prefix=$prefix -j$jobs";
 }
-sh "$make -j$jobs > /dev/null";
-sh "sudo $make install > /dev/null";
-sh "sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
+sh "$make -j$jobs";
+sh "$sudo $make install";
+sh "$sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep $ver";
-system "sudo killall nginx > /dev/null 2>&1";
-sh "sudo $prefix/nginx/sbin/nginx";
-sh "curl -si localhost/lua|grep $lua";
-sh "curl -si localhost/lua|grep $ver";
-sh "curl -si localhost/cjson|grep 'json.safe: '";
+system "[ -f '$prefix/nginx/logs/nginx.pid' ] && $sudo kill \$(cat '$prefix/nginx/logs/nginx.pid') > /dev/null 2>&1";
+sh "$sudo $prefix/nginx/sbin/nginx";
+sh "curl -si localhost:$port/lua|grep $lua";
+sh "curl -si localhost:$port/lua|grep $ver";
+sh "curl -si localhost:$port/cjson|grep 'json.safe: '";
 sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
-sh "sudo $prefix/nginx/sbin/nginx -sstop";
+sh qq{$prefix/bin/restydoc -s listen | grep 'configures the port to accept HTTP/2'};
+sh qq{$prefix/bin/restydoc opm | grep -E '^Status\$'};
+sh "$sudo $prefix/nginx/sbin/nginx -sstop";
 
 warn "\n=== Debug Build ===\n";
-$prefix = "/usr/local/openresty-debug";
-sh "sudo rm -rf $prefix/lualib $prefix/luajit $prefix/bin $prefix/lua $prefix/nginx/sbin $prefix/nginx/html";
+$prefix = "$prefix_base-debug";
+cleanup();
 unless ($opts{f}) {
     my $more_cfg_opts = '';
     if ($lua eq 'LuaJIT') {
-        $more_cfg_opts .= " --with-luajit-xcflags='-DLUA_USE_TRACE_LOGS'"
+        $more_cfg_opts .= " --with-luajit-xcflags='-DLUA_USE_TRACE_LOGS -fPIC'"
     }
-    sh "./configure --with-debug $cfg_opts $more_cfg_opts --prefix=$prefix -j$jobs > /dev/null";
+    sh "./configure --with-debug $cfg_opts $more_cfg_opts --prefix=$prefix -j$jobs";
 }
-sh "$make -j$jobs > /dev/null";
-sh "sudo $make install > /dev/null";
-sh "sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
+sh "$make -j$jobs";
+sh "$sudo $make install";
+sh "$sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep $ver";
 sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--with-debug'";
-system "sudo killall nginx > /dev/null 2>&1";
-sh "sudo $prefix/nginx/sbin/nginx";
-sh "curl -si localhost/lua|grep $lua";
-sh "curl -si localhost/lua|grep $ver";
-sh "curl -si localhost/cjson|grep 'json.safe: '";
+system "[ -f '$prefix/nginx/logs/nginx.pid' ] && $sudo kill \$(cat '$prefix/nginx/logs/nginx.pid') > /dev/null 2>&1";
+sh "$sudo $prefix/nginx/sbin/nginx";
+sh "curl -si localhost:$port/lua|grep $lua";
+sh "curl -si localhost:$port/lua|grep $ver";
+sh "curl -si localhost:$port/cjson|grep 'json.safe: '";
 sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
-sh "sudo $prefix/nginx/sbin/nginx -sstop";
+sh "$sudo $prefix/nginx/sbin/nginx -sstop";
 
-warn "\n=== DTrace Build ===\n";
-$prefix = "/usr/local/openresty-dtrace";
-sh "sudo rm -rf $prefix/lualib $prefix/luajit $prefix/bin $prefix/lua $prefix/nginx/sbin $prefix/nginx/html";
-unless ($opts{f}) {
-    sh "./configure $cfg_opts --with-dtrace-probes --prefix=$prefix -j$jobs > /dev/null";
-}
-sh "$make -j$jobs > /dev/null";
-sh "sudo $make install > /dev/null";
-sh "sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
-sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep $ver";
-sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--with-dtrace-probes'";
-system "sudo killall nginx > /dev/null 2>&1";
-sh "sudo $prefix/nginx/sbin/nginx";
-sh "curl -si localhost/lua|grep $lua";
-sh "curl -si localhost/lua|grep $ver";
-sh "curl -si localhost/cjson|grep 'json.safe: '";
-if ($^O eq 'linux') {
-    sh "stap -L 'process(\"$prefix/nginx/sbin/nginx\").mark(\"*\")'|grep http__lua__coroutine__done";
+#warn "\n=== DTrace Build ===\n";
+#$prefix = "/usr/local/openresty-dtrace";
+#cleanup();
+#unless ($opts{f}) {
+#sh "./configure $cfg_opts --with-dtrace-probes --prefix=$prefix -j$jobs";
+#}
+#sh "$make -j$jobs";
+#sh "$sudo $make install";
+#sh "$sudo cp /tmp/nginx.conf $prefix/nginx/conf/nginx.conf";
+#sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep $ver";
+#sh "$prefix/nginx/sbin/nginx -V 2>&1 |grep '\\--with-dtrace-probes'";
+#system "[ -f '$prefix/nginx/logs/nginx.pid' ] && $sudo kill \$(cat '$prefix/nginx/logs/nginx.pid') > /dev/null 2>&1";
+#sh "$sudo $prefix/nginx/sbin/nginx";
+#sh "curl -si localhost:$port/lua|grep $lua";
+#sh "curl -si localhost:$port/lua|grep $ver";
+#sh "curl -si localhost:$port/cjson|grep 'json.safe: '";
+#if ($^O eq 'linux') {
+#sh "stap -L 'process(\"$prefix/nginx/sbin/nginx\").mark(\"*\")'|grep http__lua__coroutine__done";
+#
+#} elsif ($^O eq 'freebsd' || $^O eq 'darwin' || $^O eq 'solaris') {
+#sh "$sudo dtrace -l|grep http-lua-coroutine-done";
+#}
+#sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
 
-} elsif ($^O eq 'freebsd' || $^O eq 'darwin' || $^O eq 'solaris') {
-    sh "sudo dtrace -l|grep http-lua-coroutine-done";
-}
-sh qq{$prefix/bin/resty -e 'ngx.say("Hello World!")'|grep 'Hello World'};
+#sh "$sudo $prefix/nginx/sbin/nginx -sstop";
 
-sh "sudo $prefix/nginx/sbin/nginx -sstop";
-
-sub sh ($) {
+sub sh ($@) {
     my $cmd = shift;
-    system($cmd) == 0 or die "Command \"$cmd\" failed";
+    my $pat = shift;
+    my $neg = shift;
+    open my $in, "$cmd|"
+        or die "Command \"$cmd\" failed";
+    my $out = '';
+    my $found;
+    while (<$in>) {
+        if (defined $pat) {
+            if ($neg && index($_, $pat) < 0) {
+                $found = 1;
+            } elsif (!$neg && index($_, $pat) >= 0) {
+                $found = 1;
+            }
+        }
+        $out .= $_;
+    }
+    close $in
+        or die "Failed to run command \"$cmd\": $out";
+    if (!defined $found && defined $pat) {
+        if ($neg) {
+            die "unexpectedly found pattern '$pat' in the output of command \"$cmd\": $out";
+        }
+        die "failed find pattern '$pat' in the output of command \"$cmd\": $out";
+    }
+    if (length $out < 1024) {
+        print $out;
+    }
+}
+
+sub cleanup () {
+    sh "$sudo rm -rf $prefix/lualib $prefix/luajit $prefix/bin $prefix/nginx/sbin $prefix/nginx/html"
+       . " $prefix/site $prefix/pod $prefix/resty.index";
 }
 
 __DATA__
 
 user  nobody;
-worker_processes  1;
+worker_processes  2;
 error_log  logs/error.log;
 pid        logs/nginx.pid;
 
@@ -256,11 +309,11 @@ http {
     include       mime.types;
     default_type  application/octet-stream;
 
-    init_by_lua '
+    init_by_lua_block {
         if jit then
             require "resty.core"
         end
-    ';
+    }
 
     upstream backend {
         server 0.0.0.1;
@@ -274,21 +327,21 @@ http {
         server_name  localhost;
 
         location = /lua {
-            content_by_lua '
+            content_by_lua_block {
                 local upstream = require "ngx.upstream"
                 if jit then
                     ngx.say(jit.version)
                 else
                     ngx.say(_VERSION)
                 end
-            ';
+            }
         }
 
         location = /cjson {
-            content_by_lua '
+            content_by_lua_block {
                 local json = require "cjson.safe"
                 ngx.say("cjson.safe: ", json.encode{foo = 123})
-            ';
+            }
         }
     }
 }

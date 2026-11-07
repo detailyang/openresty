@@ -10,6 +10,8 @@ Table of Contents
 * [Description](#description)
     * [For Users](#for-users)
     * [For Bundle Maintainers](#for-bundle-maintainers)
+* [Additional Features](#additional-features)
+    * [resolv.conf parsing](#resolvconf-parsing)
 * [Mailing List](#mailing-list)
 * [Report Bugs](#report-bugs)
 * [Copyright & License](#copyright--license)
@@ -20,20 +22,21 @@ Description
 OpenResty is a full-fledged web application server by bundling the standard nginx core,
 lots of 3rd-party nginx modules, as well as most of their external dependencies.
 
-This bundle is maintained Yichun Zhang (agentzh).
+This bundle is maintained by Yichun Zhang (agentzh).
 
 Because most of the nginx modules are developed by the bundle maintainers, it can ensure
 that all these modules are played well together.
 
 The bundled software components are copyrighted by the respective copyright holders.
 
-The homepage for this project is http://openresty.org.
+The homepage for this project is on [openresty.org](https://openresty.org/).
 
 For Users
 ---------
 
-Visit http://openresty.org/#Download to download the latest bundle tarball, and
-follow the installation instructions in the page http://openresty.org/#Installation.
+Visit the [download page](https://openresty.org/en/download.html) on the `openresty.org` web site
+to download the latest bundle tarball, and
+follow the installation instructions in the [installation page](https://openresty.org/en/installation.html).
 
 For Bundle Maintainers
 ----------------------
@@ -50,13 +53,46 @@ make
 
 at the top of the bundle source tree.
 
-Please note that you may need to install some extra dependencies, like `perl` and `dos2unix`.
+Please note that you may need to install some extra dependencies, like `perl`, `dos2unix`, and `mercurial`.
 On Fedora 22, for example, installing the dependencies
 is as simple as running the following commands:
 
 ```bash
-sudo dnf install perl dos2unix
+sudo dnf install perl dos2unix mercurial
 ```
+
+[Back to TOC](#table-of-contents)
+
+Additional Features
+===================
+
+In additional to the standard nginx core features, this bundle also supports the following:
+
+[Back to TOC](#table-of-contents)
+
+resolv.conf parsing
+--------------------
+
+**syntax:** *resolver address ... [valid=time] [ipv6=on|off] [local=on|off|path]*
+
+**default:** *-*
+
+**context:** *http, stream, server, location*
+
+Similar to the [`resolver` directive](https://nginx.org/en/docs/http/ngx_http_core_module.html#resolver)
+in standard nginx core with additional support for parsing additional resolvers from the `resolv.conf` file
+format.
+
+When `local=on`, the standard path of `/etc/resolv.conf` will be used. You may also specify arbitrary
+path to be used for parsing, for example: `local=/tmp/test.conf`.
+
+When `local=off`, parsing will be disabled (this is the default).
+
+IPv6 nameservers with a zone ID (for example, `fe80::1%eth0`) in the resolver
+file are skipped. If no usable nameservers remain, including
+explicitly configured addresses, configuration fails.
+
+This feature is not available on Windows platforms.
 
 [Back to TOC](#table-of-contents)
 
@@ -87,7 +123,7 @@ Copyright & License
 
 The bundle itself is licensed under the 2-clause BSD license.
 
-Copyright (c) 2011-2016, Yichun "agentzh" Zhang (章亦春) <agentzh@gmail.com>, CloudFlare Inc.
+Copyright (c) 2011-2019, Yichun "agentzh" Zhang (章亦春) <agentzh@gmail.com>, OpenResty Inc.
 
 This module is licensed under the terms of the BSD license.
 
